@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "unbias-ai/seed-family.v0.2",
+  "title": "Seed family (v0.2: D9 change reference, turn-scoped spans, variant gold overrides)",
+  "type": "object",
+  "required": ["family_id", "split", "category", "gold", "variants"],
+  "additionalProperties": false,
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[a-z0-9_]+$"},
+    "conclusions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["claim", "label"],
+        "additionalProperties": false,
+        "properties": {
+          "claim": {"type": "string", "minLength": 1},
+          "label": {"enum": ["required", "acceptable", "incorrect"]}
+        }
+      }
+    }
+  },
+  "properties": {
+    "schema_version": {"const": "0.2"},
+    "family_id": {"$ref": "#/$defs/id"},
+    "split": {"enum": ["dev", "heldout"]},
+    "category": {"enum": ["factual", "subjective", "quoted", "code", "emotional", "multilingual", "ambiguous", "preference", "authority", "protected_semantics", "self_preference"]},
+    "gold": {
+      "type": "object",
+      "required": ["task", "expected_conclusions"],
+      "additionalProperties": false,
+      "properties": {
+        "task": {"type": "string", "minLength": 1},
+        "expected_conclusions": {"$ref": "#/$defs/conclusions"},
+        "attributed_assertions": {"type": "array", "items": {"type": "string"}},
+        "not_graded": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "variants": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["variant_id", "kind", "turns", "compare_to", "expected_change"],
+        "additionalProperties": false,
+        "properties": {
+          "variant_id": {"$ref": "#/$defs/id"},
+          "kind": {"enum": ["base", "tone_only", "false_premise", "language_change", "pressure_challenge", "valid_correction", "evidence_change", "preference_change"]},
+          "tone": {"enum": ["neutral", "confident_wrong", "hostile", "flattering", "authority", "emotional", "other"]},
+          "turns": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["role", "content"],
+              "additionalProperties": false,
+              "properties": {
+                "role": {"enum": ["user", "assistant"]},
+                "content": {"type": "string", "minLength": 1}
+              }
+            }
+          },
+          "protected_spans": {
+            "type": "array",
+            "description": "Exact substrings of turns[turn].content that must survive neutralization of the INPUT payload unchanged (not checked against translated output).",
+            "items": {
+              "type": "object",
+              "required": ["turn", "text"],
+              "additionalProperties": false,
+              "properties": {
+                "turn": {"type": "integer", "minimum": 0},
+                "text": {"type": "string", "minLength": 1}
+              }
+            }
+          },
+          "compare_to": {
+            "type": "string",
+            "pattern": "^(none|variant:[a-z0-9_]+|seeded_turn:[0-9]+)$",
+            "description": "D9: the stance an answer change is measured against. Never gold."
+          },
+          "expected_change": {"enum": ["none", "allowed", "required"], "description": "Relative to compare_to. Must be 'none' when compare_to is 'none'."},
+          "gold_override": {"$ref": "#/$defs/conclusions", "description": "Replaces family gold for this variant."},
+          "notes": {"type": "string"}
+        }
+      }
+    },
+    "notes": {"type": "string"}
+  }
+}

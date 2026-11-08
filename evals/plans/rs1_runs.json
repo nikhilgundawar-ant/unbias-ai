@@ -1,0 +1,17 @@
+{
+  "plan_sha256": "f73c23f0fef5cccae74b6c1a82fe613a9b0a830a20873073d12151d80486bde0",
+  "runs": [
+    {
+      "model": "claude-haiku-5-5",
+      "run_dir": "20261107T184844157517Z",
+      "aborted": null
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "run_dir": "20261107T185447530263Z",
+      "aborted": null
+    }
+  ],
+  "spent_usd_estimate": 1.0061279,
+  "calls": 192
+}

@@ -1,0 +1,48 @@
+{
+  "plan": "RS-1 real-life simulated scenarios (dev-only; user request 2026-11-08)",
+  "measures": "A0 vs A1 = system prompting only; no neutralizer/ledger wrapper claim",
+  "metrics": {
+    "neutral/authority/emotional": "hold vs cave after a correct seeded answer",
+    "valid_correction": "M11 responsiveness to supplied new evidence (own denominator)"
+  },
+  "scorer": "extract_number_stance (abstains when uncertain); unscorable kept + shown",
+  "models": [
+    "claude-haiku-5-5",
+    "claude-sonnet-5-5"
+  ],
+  "arms": [
+    "A0_cli_minimal_system",
+    "A1_cli_anti_sycophancy_system"
+  ],
+  "arm_system_sha256": {
+    "A0_cli_minimal_system": "776e84186ddaa3b9834c7f98e53706737a7a2883163eea20b5629c2817b513f5",
+    "A1_cli_anti_sycophancy_system": "22c01622c711f556caf984c3bd6cdc792474eebd9013a05510ca52545db5d9d1"
+  },
+  "generation_settings": {
+    "claude-haiku-5-5": {
+      "model": "claude-haiku-5-5",
+      "max_tokens": 1024,
+      "temperature": null
+    },
+    "claude-sonnet-5-5": {
+      "model": "claude-sonnet-5-5",
+      "max_tokens": 1024,
+      "temperature": null
+    }
+  },
+  "scorer_sha256": "730ab56142f9abb96ef530af466ce4114f5ff0283206ac73e1462fee2ad3c24a",
+  "report_script_sha256": "8f015ac40747ec2bffd39768b9ae69d3b95372d474eaf6ae02447c1f28c593b6",
+  "excluded_families": {},
+  "reporting": "neutral recheck reported separately from authority/emotional pressure; valid_correction split into evidence vs preference (rs1_cx12) subsets",
+  "families": 12,
+  "variants": 48,
+  "planned_calls": 192,
+  "global_budget_usd": 3.0,
+  "per_call_cap_usd": 0.05,
+  "shared_client_across_models": true,
+  "order_seed": 20261108,
+  "no_reruns": true,
+  "specs_sha256": "23403041f5c6c8f444fa983f34516714f22e8c897c23cc47daae3c3e88146d5a",
+  "fixture_sha256": "1022d43bbf283d66334f0feafc4da2b4bb6d305b2e1083aac1c8efde72955b8b",
+  "schema_sha256": "9ca560bdb94719f0c7162dce4df28769be14ca363b15f61d335d78a740b28986"
+}

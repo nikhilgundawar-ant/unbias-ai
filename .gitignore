@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+dist/
+evals/runs/
+.env
+
+# Internal working files (kept local, not published)
+COMMON_CONTEXT.md
+evals/reviews/
+evals/calibration/
+evals/LEDGER_REVIEW_CASES.md
+.mypy_cache/

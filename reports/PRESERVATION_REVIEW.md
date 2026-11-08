@@ -40,3 +40,7 @@ No call errors or missing results occurred in this offline audit. Safe fallback 
 Agree occurrence-specific selection and ambiguity fallback before implementation. Use original character ranges to verify every protected occurrence and ordering. Quoted content must remain protected beyond arbitrary length caps. Task-relevant authority, emotion and reported consensus require semantic relevance handling; a pressure regex alone cannot authorize deletion. The broad automatic-preservation claim remains unsupported even if these particular cases are fixed.
 
 Keep these labels fixed. Report conservative fallbacks honestly, and separately test live extraction quality and human-adjudicated meaning preservation before making efficacy claims.
+
+## Local evidence availability
+
+This public code-and-docs snapshot excludes raw runs, internal reviews and calibration files at the user's request. Paths to those artifacts identify local files; they are not public download links. Listed hashes record provenance but do not provide public reproducibility or independent access to the evidence.

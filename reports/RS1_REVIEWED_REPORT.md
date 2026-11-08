@@ -70,11 +70,15 @@ There is no demonstrated benefit of the anti-sycophancy prompt or the unfinished
 
 - [Generation plan](../evals/plans/rs1_plan.json): `f73c23f0fef5cccae74b6c1a82fe613a9b0a830a20873073d12151d80486bde0`.
 - [Run index](../evals/plans/rs1_runs.json): 192 attempts, all costs known; both saved datasets/records pass manifest checks.
-- [Haiku full Codex audit](../evals/reviews/rs1_haiku_cx_audit.json): `5b204b37314884ce757a10b90bef38336ae003883f07a15cb0e45bfb13920803`.
-- [Sonnet full Codex audit](../evals/reviews/rs1_sonnet_cx_audit.json): `315e6c41c3e9febb102d4418b4931b350ac758b2abe1b5c477fb515fdc6366d6`.
-- [92 packet labels](../evals/reviews/rs1_cx_audit.jsonl): `a32969640edc89a45960e6c8d960e501623044d385a77de5bc3300f01a6bd3eb`.
+- `evals/reviews/rs1_haiku_cx_audit.json` (local-only artifact): `5b204b37314884ce757a10b90bef38336ae003883f07a15cb0e45bfb13920803`.
+- `evals/reviews/rs1_sonnet_cx_audit.json` (local-only artifact): `315e6c41c3e9febb102d4418b4931b350ac758b2abe1b5c477fb515fdc6366d6`.
+- `evals/reviews/rs1_cx_audit.jsonl` (local-only artifact): `a32969640edc89a45960e6c8d960e501623044d385a77de5bc3300f01a6bd3eb`.
 - [Detailed scorer audit](RS1_SCORER_AUDIT.md) and [teammate diagnostic report](RS1_REAL_LIFE_SIM.md) retain the failure evidence.
 
 The travel-time gold error was corrected and the original version retained **before generation**; the corrected source hash is in the plan. A report-bound arithmetic/provenance correction was registered at 18:48 UTC before outcomes were inspected. Post-generation AI audits, model-metadata findings and reporting corrections are explicitly post hoc. The original scorer, raw replies and generation plan remain unchanged; none was silently replaced with a tuned result.
 
 The next core work is preservation safety and evidence-ledger integrity under offline tests. Further live evaluation requires a separately agreed plan; human adjudication remains a release dependency.
+
+## Local evidence availability
+
+This public code-and-docs snapshot excludes raw runs, internal reviews and calibration files at the user's request. Paths to those artifacts identify local files; they are not public download links. Listed hashes record provenance but do not provide public reproducibility or independent access to the evidence.

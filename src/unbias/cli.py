@@ -20,8 +20,10 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+from unbias import hook
 from unbias.evals.extractors import extract_number_stance
 from unbias.evals.runner import MINIMAL_SYSTEM_PROMPT, Arm, load_run
+from unbias.ledger import OPS, Ledger, LedgerError
 
 
 @dataclass(frozen=True)
@@ -243,6 +245,69 @@ def _generate(args: argparse.Namespace) -> Path:
     )
 
 
+def _kv(items: list[str], number: bool = False) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for it in items:
+        k, sep, v = it.partition("=")
+        if not sep or not k:
+            raise SystemExit(f"expected NAME=VALUE, got {it!r}")
+        out[k] = float(v) if number else v
+    return out
+
+
+def _ledger(args: argparse.Namespace) -> int:
+    path = Path.cwd() / hook.LEDGER_PATH
+    path.parent.mkdir(exist_ok=True)
+    led = Ledger(str(path))
+    ns = hook.LEDGER_NS
+    if not led.db.execute("SELECT 1 FROM namespaces WHERE id=?", (ns,)).fetchone():
+        led.namespace(ns)
+    try:
+        if args.lcmd == "claim":
+            print(
+                led.assert_claim(
+                    ns, args.text, attribution=args.by, actor=args.by, scope=_kv(args.scope) or None
+                )
+            )
+        elif args.lcmd == "pref":
+            print(led.set_preference(ns, args.key, args.value))
+        elif args.lcmd == "calc":
+            ev = led.add_calculation_evidence(
+                ns,
+                op=args.op,
+                inputs=_kv(args.inputs, number=True),
+                result=args.result,
+                premises=args.premise,
+                scope=_kv(args.scope) or None,
+            )
+            if args.supersedes:
+                print(
+                    led.supersede(args.supersedes, ev, actor="user", reason="cli", label=args.label)
+                )
+            else:
+                print(led.derive(ev, actor="user", label=args.label))
+        elif args.lcmd == "quote":
+            doc = Path(args.file).read_text(encoding="utf-8")
+            ev = led.add_excerpt_evidence(
+                ns, source=args.source, version=args.version, document=doc, excerpt=args.excerpt
+            )
+            print(led.attest_excerpt(ev, actor="user"))
+        elif args.lcmd == "show":
+            print(led.render(ns, max_chars=hook.LEDGER_BUDGET) or "(empty)")
+        elif args.lcmd == "purge":
+            led.purge_claim(args.claim_id, actor="user")
+            print("purged")
+        elif args.lcmd == "forget-all":
+            led.purge_namespace(ns, actor="user")
+            print("project ledger deleted (backups/exports outside this file are not affected)")
+    except LedgerError as e:
+        sys.stderr.write(f"refused: {e}\n")
+        return 1
+    finally:
+        led.db.close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="unbias")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -260,7 +325,58 @@ def main(argv: list[str] | None = None) -> int:
     pt.add_argument("--seed", type=int, default=20261107)
     pt.add_argument("--out", default="evals/runs")
     pt.add_argument("--root", default=".")
+
+    sub.add_parser("hook", help="Claude Code UserPromptSubmit hook (reads JSON on stdin)")
+    ih = sub.add_parser("install-hook", help="print (default) or add the Claude Code hook")
+    ih.add_argument(
+        "--project",
+        action="store_true",
+        help="write ./.claude/settings.json (never global settings)",
+    )
+
+    lg = sub.add_parser("ledger", help="record claims/evidence in ./.unbias/ledger.db")
+    lsub = lg.add_subparsers(dest="lcmd", required=True)
+    c = lsub.add_parser("claim", help="record what someone said (always unverified)")
+    c.add_argument("text")
+    c.add_argument("--by", default="user", choices=("user", "assistant", "model", "source"))
+    c.add_argument("--scope", action="append", default=[], metavar="KEY=VALUE")
+    pr = lsub.add_parser("pref", help="set a current preference")
+    pr.add_argument("key")
+    pr.add_argument("value")
+    ca = lsub.add_parser("calc", help="record a calculation and establish it if it recomputes")
+    ca.add_argument("op", choices=sorted(OPS))
+    ca.add_argument("inputs", nargs="+", metavar="NAME=NUMBER")
+    ca.add_argument("--result", type=float, required=True)
+    ca.add_argument("--premise", action="append", default=[], metavar="CLAIM_ID")
+    ca.add_argument("--label", help="your wording; shown as unverified")
+    ca.add_argument("--scope", action="append", default=[], metavar="KEY=VALUE")
+    ca.add_argument("--supersedes", metavar="CLAIM_ID")
+    qu = lsub.add_parser("quote", help="establish what a document says (exact excerpt)")
+    qu.add_argument("--source", required=True)
+    qu.add_argument("--version", required=True)
+    qu.add_argument("--file", required=True, help="the document text file")
+    qu.add_argument("--excerpt", required=True)
+    lsub.add_parser("show", help="print what the hook would add")
+    pu = lsub.add_parser("purge", help="delete a claim and events that name it")
+    pu.add_argument("claim_id")
+    lsub.add_parser("forget-all", help="delete this project's whole ledger namespace")
     args = p.parse_args(argv)
+
+    if args.cmd == "hook":
+        return hook.main()
+    if args.cmd == "install-hook":
+        if not args.project:
+            sys.stdout.write(
+                "Add this to .claude/settings.json (or run `unbias install-hook --project`):\n"
+                + hook.snippet()
+                + "\n"
+            )
+            return 0
+        ok, msg = hook.install_project(Path.cwd())
+        (sys.stdout if ok else sys.stderr).write(msg + "\n")
+        return 0 if ok else 1
+    if args.cmd == "ledger":
+        return _ledger(args)
 
     if args.demo:
         import tempfile

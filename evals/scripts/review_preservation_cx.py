@@ -11,13 +11,13 @@ import hashlib
 import json
 from pathlib import Path
 
-from unbias.neutralizer import neutralize, parse_extraction, plan_cuts
+from unbias.neutralizer import neutralize
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "evals/fixtures/preservation_cx.dev.jsonl"
 
 
-def review() -> dict:
+def review(mode: str = "apply") -> dict:
     results = []
     for row in map(json.loads, FIXTURE.read_text().splitlines()):
         for role in ("oracle", "unsafe"):
@@ -34,10 +34,8 @@ def review() -> dict:
                 "relevance_confident": True,
             }
             raw = json.dumps(payload)
-            result = neutralize(row["input"], lambda _, raw=raw: raw)
-            ext, _ = parse_extraction(raw, row["input"])
-            proposed, _ = plan_cuts(row["input"], ext) if ext is not None else ([], [])
-            actual = [] if result.fallback else proposed
+            result = neutralize(row["input"], lambda _, raw=raw: raw, apply=mode == "apply")
+            actual = result.applied_cuts
             protected_overlap = any(
                 start < p["end"] and p["start"] < end
                 for start, end in actual
@@ -47,7 +45,9 @@ def review() -> dict:
                 not any(a["start"] <= start and end <= a["end"] for a in row["allowed_cuts"])
                 for start, end in actual
             )
-            if role == "oracle":
+            if mode == "suggest":
+                meets_expectation = result.prompt == row["input"] and not actual
+            elif role == "oracle":
                 meets_expectation = (
                     result.prompt == row["expected_oracle_prompt"] and not result.fallback
                 )
@@ -64,6 +64,7 @@ def review() -> dict:
                     "fallback": result.fallback,
                     "problems": result.problems,
                     "removed": result.removed,
+                    "proposed_cut_ranges": result.proposed_cuts,
                     "actual_cut_ranges": actual,
                     "protected_overlap": protected_overlap,
                     "outside_allowed": outside_allowed,
@@ -71,6 +72,7 @@ def review() -> dict:
             )
     return {
         "scope": "offline fixed stub verifier only; not live extractor accuracy",
+        "mode": mode,
         "fixture_sha256": hashlib.sha256(FIXTURE.read_bytes()).hexdigest(),
         "source_sha256": hashlib.sha256(
             (ROOT / "src/unbias/neutralizer.py").read_bytes()
@@ -83,8 +85,9 @@ def review() -> dict:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--mode", choices=("apply", "suggest"), default="apply")
     args = parser.parse_args()
-    report = review()
+    report = review(args.mode)
     with args.out.open("x") as output:
         output.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
     for role in ("oracle", "unsafe"):

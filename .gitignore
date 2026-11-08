@@ -7,6 +7,7 @@ __pycache__/
 dist/
 evals/runs/
 .env
+.unbias/
 
 # Internal working files (kept local, not published)
 COMMON_CONTEXT.md

@@ -22,8 +22,6 @@ from typing import Any
 # ---------- 1. annotator ----------
 
 _PROTECTED = {
-    "code": r"```.*?```|`[^`\n]+`",
-    "quote": r"(?<!\w)(['\"\u2018\u201c])(?:(?!\1).){1,400}?['\"\u2019\u201d](?!\w)",
     "url": r"https?://\S+",
     "number": r"(?<![\w.])[-+\u2212]?\d[\d,]*(?:\.\d+)?\s?"
     r"(?:%|mg|g|kg|ml|ms|s|km|m|days?|hours?|years?)?",
@@ -74,6 +72,58 @@ def _find(patterns: dict[str, str], text: str) -> list[Span]:
 _TRAIL = re.compile(r"[.!?,;:]*[ \t]*")
 
 
+_OPEN_CLOSE = {'"': '"\u201d', "\u201c": '\u201d"', "'": "'\u2019", "\u2018": "\u2019'"}
+
+
+def _delimited(text: str) -> list[Span]:
+    """Quote/code spans from a single left-to-right scan (CX N-2 04:40), replacing independent
+    open/close regexes. Unclosed delimiters protect to the end of the text, because parser
+    uncertainty must never authorize a deletion. Apostrophes inside words (don't, it's,
+    students') are ordinary text, not quote boundaries."""
+    out: list[Span] = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "`":  # CommonMark-style: a run of N backticks closes only on a run of exactly N
+            run = len(text[i:]) - len(text[i:].lstrip("`"))
+            k, end = i + run, n
+            while k < n:
+                j = text.find("`", k)
+                if j == -1:
+                    break
+                r2 = len(text[j:]) - len(text[j:].lstrip("`"))
+                if r2 == run:
+                    end = j + r2
+                    break
+                k = j + r2
+            out.append(Span(i, end, "code", text[i:end]))
+            i = end
+            continue
+        if ch in _OPEN_CLOSE:
+            single = ch in "'\u2018"
+            opener = (
+                not (i > 0 and text[i - 1].isalnum()) and i + 1 < n and not text[i + 1].isspace()
+            )
+            if opener or not single:
+                end = n
+                k = i + 1
+                while k < n:
+                    if text[k] == "\\":  # CX 04:49: an escaped delimiter never closes
+                        k += 2
+                        continue
+                    if text[k] in _OPEN_CLOSE[ch] and not (
+                        single and k + 1 < n and text[k + 1].isalnum()
+                    ):
+                        end = k + 1
+                        break
+                    k += 1
+                out.append(Span(i, end, "quote", text[i:end]))
+                i = end
+                continue
+        i += 1
+    return out
+
+
 def annotate(text: str) -> tuple[list[Span], list[Span]]:
     """Return (candidate protected spans, candidate suspect spans).
 
@@ -85,7 +135,8 @@ def annotate(text: str) -> tuple[list[Span], list[Span]]:
         end = _TRAIL.match(text, sp.end)
         e = end.end() if end else sp.end
         suspect.append(Span(sp.start, e, sp.kind, text[sp.start : e]))
-    return _find(_PROTECTED, text), suspect
+    protected = sorted(_find(_PROTECTED, text) + _delimited(text), key=lambda s: (s.start, s.end))
+    return protected, suspect
 
 
 # ---------- 2. extraction ----------
@@ -163,10 +214,17 @@ def plan_cuts(message: str, ext: Extraction) -> tuple[list[tuple[int, int]], lis
     """Every occurrence of every set_aside span must be fully inside a suspect span and must not
     touch a protected candidate; otherwise it is a problem (-> fallback). Returns sorted cuts."""
     protected, suspect = annotate(message)
+    # N-2 item 3: text the extractor itself kept (task, context, attributed claims,
+    # preferences) can never be cut, in any occurrence.
+    kept = [r for f in _FIELDS for it in ext.fields[f] for r in _ranges(message, it["source_span"])]
     cuts: list[tuple[int, int]] = []
     problems: list[str] = []
     for item in ext.set_aside:
-        for r in _ranges(message, item["source_span"]):
+        occ = _ranges(message, item["source_span"])
+        if len(occ) > 1:  # N-2 item 1: substring-only selection is ambiguous -> fallback
+            problems.append(f"ambiguous cut: {item['source_span']!r} occurs {len(occ)} times")
+            continue
+        for r in occ:
             if not any(s.start <= r[0] and r[1] <= s.end for s in suspect):
                 problems.append(f"cut not fully inside flagged pressure: {message[r[0] : r[1]]!r}")
             elif any(_overlaps(r, (p.start, p.end)) for p in protected):
@@ -177,7 +235,18 @@ def plan_cuts(message: str, ext: Extraction) -> tuple[list[tuple[int, int]], lis
                 s_end = max(s.end for s in suspect if s.start <= r[0] and r[1] <= s.end)
                 tail = _TRAIL.match(message, r[1])
                 end = min(tail.end() if tail else r[1], s_end)
-                cuts.append((r[0], end))
+                ext_r = (r[0], end)
+                # Check the FINAL extended range, not just the cited span (N-2 item 3).
+                if any(_overlaps(ext_r, (p.start, p.end)) for p in protected):
+                    problems.append(
+                        f"extended cut overlaps protected text: {message[r[0] : end]!r}"
+                    )
+                elif any(_overlaps(ext_r, k) for k in kept):
+                    problems.append(
+                        f"cut overlaps text the extractor kept: {message[r[0] : end]!r}"
+                    )
+                else:
+                    cuts.append(ext_r)
     merged: list[tuple[int, int]] = []
     for a, b in sorted(cuts):
         if merged and a <= merged[-1][1]:
@@ -207,12 +276,24 @@ class NeutralizeResult:
     prompt: str  # what the answerer receives
     fallback: bool  # True -> prompt is the original message, unchanged (D2)
     problems: list[str] = field(default_factory=list)
-    removed: list[str] = field(default_factory=list)  # audit diff shown to the user
+    removed: list[str] = field(default_factory=list)  # text ACTUALLY removed (apply mode only)
     raw_extraction: str | None = None
+    # N-2 item 5: audit keeps proposed vs applied ranges (applied is empty on fallback).
+    proposed_cuts: list[tuple[int, int]] = field(default_factory=list)
+    applied_cuts: list[tuple[int, int]] = field(default_factory=list)
+    proposed: list[str] = field(default_factory=list)  # verified cut text, applied or not
 
 
-def neutralize(message: str, extract: Callable[[str], str | None]) -> NeutralizeResult:
-    """`extract` takes the extraction prompt and returns raw model text (or None on failure)."""
+def neutralize(
+    message: str, extract: Callable[[str], str | None], *, apply: bool = False
+) -> NeutralizeResult:
+    """`extract` takes the extraction prompt and returns raw model text (or None on failure).
+
+    Default is SUGGEST mode (CX N-2 contract): verified cuts are proposed and shown, but the
+    answerer receives the original message. Regex + extractor checks cannot prove a phrase is
+    irrelevant (e.g. "I'm an engineer. Tailor this to my background."), so automatic editing is
+    opt-in (`apply=True`) until preservation is independently measured.
+    """
     raw = extract(EXTRACTION_TEMPLATE.format(message=message))
     if raw is None:
         return NeutralizeResult(message, True, ["extractor call failed"])
@@ -225,9 +306,11 @@ def neutralize(message: str, extract: Callable[[str], str | None]) -> Neutralize
     cuts, cut_problems = plan_cuts(message, ext)
     problems += cut_problems
     if problems:
-        return NeutralizeResult(message, True, problems, raw_extraction=raw)
-    removed = [message[a:b] for a, b in cuts]
-    return NeutralizeResult(apply_cuts(message, cuts), False, [], removed, raw)
+        return NeutralizeResult(message, True, problems, raw_extraction=raw, proposed_cuts=cuts)
+    texts = [message[a:b] for a, b in cuts]
+    if not apply:  # suggest: nothing was removed; proposals stay inspectable (CX 04:40)
+        return NeutralizeResult(message, False, [], [], raw, cuts, [], texts)
+    return NeutralizeResult(apply_cuts(message, cuts), False, [], texts, raw, cuts, cuts, texts)
 
 
 def as_extract_fn(

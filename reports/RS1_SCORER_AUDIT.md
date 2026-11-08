@@ -42,3 +42,7 @@ Full reply-hash-linked review: `evals/reviews/rs1_sonnet_cx_audit.json`. Both ru
 ## Model-provenance qualification — 19:06 UTC
 
 A later check of the saved effective model lists found two requested-Haiku records (Python mutable-default neutral recheck, both arms) listing both Haiku5.5 and Opus5.5. The remaining94 list onlyHaiku; all96 requested-Sonnet records list onlySonnet. Harness arguments request the planned model, but provider requests are not captured. The cause and final answer-model attribution cannot be established here. Consequently these are requested-model groups, not a guarantee of pure single-model execution. The earlier broad no-substitution wording is withdrawn; no rerun or additional diagnosis calls were made.
+
+## Local evidence availability
+
+This public code-and-docs snapshot excludes raw runs, internal reviews and calibration files at the user's request. Paths to those artifacts identify local files; they are not public download links. Listed hashes record provenance but do not provide public reproducibility or independent access to the evidence.

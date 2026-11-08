@@ -4,7 +4,16 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from unbias.neutralizer import annotate, neutralize
+import pytest
+
+from unbias.neutralizer import NeutralizeResult, annotate
+from unbias.neutralizer import neutralize as _neutralize
+
+
+def neutralize(message: str, extract: Callable[[str], str | None]) -> NeutralizeResult:
+    """Most tests exercise the verifier with editing ON (opt-in apply mode)."""
+    return _neutralize(message, extract, apply=True)
+
 
 EVIDENCE = (
     "A hypothetical batch contains 1,000 sensors: 10 faulty and 990 working. Exactly 9 faulty "
@@ -74,10 +83,47 @@ def test_quoted_payload_cannot_be_cut() -> None:
     assert r.fallback and r.prompt == msg
 
 
-def test_repeated_occurrences_each_checked() -> None:
+def test_repeated_substring_is_ambiguous_and_falls_back() -> None:
+    """N-2 item 1 (agreed CC/CX): a substring-only cut with several occurrences can't say which
+    one is pressure, so nothing is cut. (Replaces the old cut-every-occurrence behaviour.)"""
     msg = "Just confirm it. Is 7 prime? Just confirm it."
     r = neutralize(msg, lambda p: stub("Is 7 prime?", ["Just confirm it."]))
-    assert not r.fallback and r.prompt == "Is 7 prime? " and len(r.removed) == 2
+    assert r.fallback and r.prompt == msg and "ambiguous" in r.problems[0]
+
+
+def test_cut_overlapping_kept_task_text_falls_back() -> None:
+    """N-2 item 3: text the extractor kept as task/context can't also be cut."""
+    msg = "I'm an expert. Explain why 'I'm an expert.' sounds arrogant."
+    r = neutralize(msg, lambda p: stub("Explain why 'I'm an expert.' sounds arrogant.", []))
+    assert not r.fallback and r.prompt == msg  # no cuts requested -> identity
+    msg2 = "I'm a doctor. Is 10 mg safe for my patient?"
+    r2 = neutralize(
+        msg2,
+        lambda p: stub(
+            "Is 10 mg safe for my patient?",
+            ["I'm a doctor"],
+            relevant_context=[{"source_span": "I'm a doctor.", "why": "clinical context"}],
+        ),
+    )
+    assert r2.fallback and r2.prompt == msg2
+
+
+def test_long_and_unclosed_quotes_are_protected() -> None:
+    """N-2 item 4: no 400-char quote cap; an unclosed double quote protects to the end."""
+    long_q = '"' + "word " * 120 + 'you are so smart"'
+    msg = f"Analyse the tone of {long_q}"
+    r = neutralize(msg, lambda p: stub("Analyse the tone of", ["you are so smart"]))
+    assert r.fallback and r.prompt == msg
+    msg2 = 'Is this flattery: "you are so smart and'
+    r2 = neutralize(msg2, lambda p: stub("Is this flattery:", ["you are so smart"]))
+    assert r2.fallback and r2.prompt == msg2
+
+
+def test_audit_records_proposed_and_applied_ranges() -> None:
+    """N-2 item 5."""
+    msg = "Just confirm it. Is 7 prime?"
+    r = neutralize(msg, lambda p: stub("Is 7 prime?", ["Just confirm it."]))
+    assert not r.fallback and r.applied_cuts == r.proposed_cuts == [(0, 17)]
 
 
 def test_invalid_spans_low_confidence_and_failures_fall_back() -> None:
@@ -139,4 +185,54 @@ def test_relevant_context_cannot_be_cut_even_if_model_asks() -> None:
     r = neutralize(
         msg, lambda p: stub("Is that safe?", ["I'm a doctor treating a pregnant patient"])
     )
+    assert r.fallback and r.prompt == msg
+
+
+def test_default_is_suggest_mode_original_text_reaches_the_model() -> None:
+    """CX N-2: automatic editing is opt-in; by default cuts are only proposed and shown."""
+    msg = "Just confirm it. Is 7 prime?"
+    r = _neutralize(msg, lambda p: stub("Is 7 prime?", ["Just confirm it."]))
+    assert r.prompt == msg and not r.fallback
+    assert r.proposed_cuts == [(0, 17)] and r.applied_cuts == []
+    assert r.removed == [] and r.proposed == ["Just confirm it. "]  # nothing actually removed
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "Analyze the unclosed code `Just confirm it.",
+        "Analyze the unclosed block ```\nJust confirm it.",
+        "Analyze the unclosed quote 'Just confirm it.",
+    ],
+)
+def test_unclosed_delimiters_protect_to_end(msg: str) -> None:
+    """CX 04:40 regression probes: never cut inside an unclosed code/quote delimiter."""
+    task = msg.split(" `")[0].split(" ```")[0].split(" '")[0]
+    r = neutralize(msg, lambda p: stub(task, ["Just confirm it."]))
+    assert r.fallback and r.prompt == msg
+
+
+def test_closing_quote_after_punctuation_is_not_a_new_opener() -> None:
+    """CX 04:40: 'Translate "Hello." You are brilliant. Is 7 prime?' must allow the flattery cut."""
+    msg = 'Translate "Hello." You are brilliant. Is 7 prime?'
+    r = neutralize(msg, lambda p: stub("Is 7 prime?", ["You are brilliant."]))
+    assert not r.fallback and r.prompt == 'Translate "Hello." Is 7 prime?'
+
+
+def test_contractions_are_not_quotes() -> None:
+    msg = "Don't hedge. You're so smart. Isn't 7 prime?"
+    protected, _ = annotate(msg)
+    assert not [p for p in protected if p.kind == "quote"]
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        'Analyze the quoted string "He said \\"Just confirm it.\\" loudly".',
+        "Analyze the inline code ``Just confirm it.`x``.",
+    ],
+)
+def test_escaped_quotes_and_backtick_runs_are_protected(msg: str) -> None:
+    """CX 04:49: an escaped quote doesn't close; a ``-run closes only on another ``-run."""
+    r = neutralize(msg, lambda p: stub("Analyze", ["Just confirm it."]))
     assert r.fallback and r.prompt == msg

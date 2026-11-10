@@ -33,7 +33,7 @@ from typing import Any
 KINDS = ("factual", "attribution", "preference", "task_state")
 STATUSES = ("asserted", "established", "contested", "superseded")
 ATTRIBUTIONS = ("user", "assistant", "model", "source", "derived")
-EXPORT_VERSION = "ledger-export.v1"
+EXPORT_VERSION = "ledger-export.v2"  # v2 adds namespace metadata (CX R2)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS namespaces (
@@ -592,13 +592,19 @@ class Ledger:
                 if r["label"]
                 else ""
             )
+            # Precedence (CX R3): expired > contested > preference > established > asserted.
             if r["expires_at"] and r["expires_at"] <= now:
                 groups["stale"].append(f"- expired: {q}{sc}")
+            elif r["status"] == "contested":
+                what = (
+                    f"preference {json.dumps(r['pref_key'], ensure_ascii=False)}"
+                    if r["kind"] == "preference"
+                    else "claim"
+                )
+                groups["contested"].append(f"- disputed {what}, unresolved: {q}{sc}")
             elif r["kind"] == "preference":
                 key = json.dumps(r["pref_key"], ensure_ascii=False)
                 groups["prefs"].append(f"- {key}: {q}")
-            elif r["status"] == "contested":
-                groups["contested"].append(f"- disputed, unresolved: {q}{sc}")
             elif r["status"] == "established":
                 _, valid = self._supports(r["id"], now)
                 if not valid:
@@ -610,7 +616,8 @@ class Ledger:
                 else:
                     groups["facts"].append(f"- {q}{sc}{lab}")
             else:
-                groups["said"].append(f"- {r['attribution']} said (not verified): {q}{sc}")
+                who = r["attribution"] if r["attribution"] in ATTRIBUTIONS else "unknown"
+                groups["said"].append(f"- {who} said (not verified): {q}{sc}")
         heads = {
             "facts": "Established (verified):",
             "conditional": "Derived from unverified inputs:",
@@ -643,9 +650,13 @@ class Ledger:
         def rows(q: str) -> list[dict[str, Any]]:
             return [dict(r) for r in self.db.execute(q, (ns,)).fetchall()]
 
+        meta = self.db.execute("SELECT expires_at FROM namespaces WHERE id=?", (ns,)).fetchone()
+        if meta is None:
+            raise LedgerError(f"unknown namespace {ns!r}")
         return {
             "version": EXPORT_VERSION,
             "ns": ns,
+            "namespace": {"expires_at": meta["expires_at"]},
             "claims": rows("SELECT * FROM claims WHERE ns=?"),
             "evidence": rows("SELECT * FROM evidence WHERE ns=?"),
             "links": rows(
@@ -659,9 +670,25 @@ class Ledger:
         """Nothing imported is trusted (L15, CX 04:42): established claims return as asserted,
         calculations are recomputed, excerpts become unverified (their document isn't exported),
         and only known columns are accepted."""
+        if data.get("version") == "ledger-export.v1":
+            raise LedgerError(
+                "v1 exports carry no namespace expiry, so freshness can't be preserved; "
+                "re-export with this version"
+            )
         if data.get("version") != EXPORT_VERSION:
             raise LedgerError("unknown export version")
-        ns = str(data["ns"])
+        ns = data.get("ns")
+        meta = data.get("namespace")
+        if not isinstance(ns, str) or not isinstance(meta, dict):
+            raise LedgerError("export is missing namespace metadata")
+        ns_expiry = _ts(_opt_str(meta.get("expires_at"), "namespace.expires_at"))
+        for key in ("claims", "evidence", "links"):
+            if not isinstance(data.get(key), list):
+                raise LedgerError(f"export field {key!r} must be a list")
+        for c in data["claims"]:
+            _validate_claim_row(c)
+        for e in data["evidence"]:
+            _validate_evidence_row(e)
 
         def row(table: str, r: dict[str, Any]) -> tuple[str, tuple[Any, ...]]:
             cols = [k for k in r if k in _COLUMNS[table]]
@@ -671,7 +698,7 @@ class Ledger:
             return q, tuple(r[k] for k in cols)
 
         with self._tx():
-            self.db.execute("INSERT INTO namespaces VALUES (?,?,?)", (ns, self.clock(), None))
+            self.db.execute("INSERT INTO namespaces VALUES (?,?,?)", (ns, self.clock(), ns_expiry))
             for c in data["claims"]:
                 if c.get("ns") != ns:
                     raise LedgerError("claim outside the exported namespace")
@@ -752,6 +779,86 @@ def _exact(v: Any) -> Fraction:
     if isinstance(v, bool) or not isinstance(v, int | float) or not math.isfinite(v):
         raise ValueError("not a finite plain number")
     return Fraction(str(v)) if isinstance(v, float) else Fraction(v)
+
+
+def _opt_str(v: Any, name: str) -> str | None:
+    if v is not None and not isinstance(v, str):
+        raise LedgerError(f"{name} must be a string or null")
+    return v
+
+
+def _req_str(row: dict[str, Any], key: str, table: str) -> str:
+    v = row.get(key)
+    if not isinstance(v, str):
+        raise LedgerError(f"{table}.{key} must be a string")
+    return v
+
+
+def _scope_obj(raw: Any, table: str) -> None:
+    try:
+        sc = json.loads(raw) if isinstance(raw, str) else None
+    except ValueError:
+        sc = None
+    if not isinstance(sc, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in sc.items()
+    ):
+        raise LedgerError(f"{table}.scope must be a JSON object of strings")
+
+
+def _validate_claim_row(c: Any) -> None:
+    """CX R1: imported rows are validated field by field before anything is written."""
+    if not isinstance(c, dict):
+        raise LedgerError("claim row must be an object")
+    for k in ("id", "ns", "text", "kind", "attribution", "status", "created_at", "updated_at"):
+        _req_str(c, k, "claims")
+    if (
+        c["kind"] not in KINDS
+        or c["attribution"] not in ATTRIBUTIONS
+        or c["status"] not in STATUSES
+    ):
+        raise LedgerError("claims: kind/attribution/status outside the allowed values")
+    _scope_obj(c.get("scope"), "claims")
+    if c.get("conditional") not in (0, 1, None) or isinstance(c.get("conditional"), bool):
+        raise LedgerError("claims.conditional must be 0 or 1")
+    for k in ("pref_key", "label", "expires_at"):
+        _opt_str(c.get(k), f"claims.{k}")
+    _ts(c["created_at"])
+    _ts(c["updated_at"])
+    if (c["kind"] == "preference") != isinstance(c.get("pref_key"), str):
+        raise LedgerError("claims: pref_key is required for, and only for, preferences")
+
+
+def _validate_evidence_row(e: Any) -> None:
+    if not isinstance(e, dict):
+        raise LedgerError("evidence row must be an object")
+    for k in ("id", "ns", "source", "source_version", "vkind", "content", "observed_at"):
+        _req_str(e, k, "evidence")
+    _scope_obj(e.get("scope"), "evidence")
+    _opt_str(e.get("expires_at"), "evidence.expires_at")
+    _ts(e["observed_at"])
+    try:
+        content = json.loads(e["content"])
+    except ValueError as ex:
+        raise LedgerError("evidence.content must be JSON") from ex
+    if e["vkind"] == "excerpt":
+        ok = (
+            isinstance(content, dict)
+            and set(content) == {"excerpt"}
+            and isinstance(content["excerpt"], str)
+        )
+    elif e["vkind"] == "calculation":
+        ok = (
+            isinstance(content, dict)
+            and set(content) == {"op", "inputs", "result", "premises"}
+            and isinstance(content["op"], str)
+            and isinstance(content["inputs"], dict)
+            and isinstance(content["premises"], list)
+            and all(isinstance(p, str) for p in content["premises"])
+        )
+    else:
+        ok = False
+    if not ok:
+        raise LedgerError("evidence.content has the wrong shape for its kind")
 
 
 def _recompute(content: dict[str, Any]) -> tuple[bool, str]:

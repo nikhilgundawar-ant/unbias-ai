@@ -13,10 +13,11 @@ D8 rules enforced here:
 
 from __future__ import annotations
 
+import functools
 import math
 import random
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 
@@ -368,8 +369,80 @@ def metric_release_check(
             return ci_shows_improvement(r, lower_is_better=lower_is_better)
         return noninferior(r, noninferiority_margin, higher_is_better=not lower_is_better)
 
+    if primary.lo == primary.hi:
+        # CX R4: resampling identical observations gives a zero-width interval that cannot
+        # represent unseen discordant failures. Never eligible on a degenerate interval.
+        reasons.append("degenerate zero-width interval (no observed variation); inconclusive")
     if not passes(primary):
         reasons.append("primary CI does not meet the criterion")
     if not passes(worst):
         reasons.append("result is sensitive to missing outcomes (worst-case bound fails)")
     return ReleaseVerdict(not reasons, tuple(reasons), primary, worst)
+
+
+@functools.lru_cache(maxsize=65536)
+def _log_binom_pmf_table(n: int, p: float) -> tuple[float, ...]:
+    if p <= 0.0:
+        return tuple(0.0 if k == 0 else -math.inf for k in range(n + 1))
+    if p >= 1.0:
+        return tuple(0.0 if k == n else -math.inf for k in range(n + 1))
+    lp, lq = math.log(p), math.log1p(-p)
+    return tuple(
+        math.lgamma(n + 1) - math.lgamma(k + 1) - math.lgamma(n - k + 1) + k * lp + (n - k) * lq
+        for k in range(n + 1)
+    )
+
+
+def _binom_tail(n: int, p: float, lo_k: int, hi_k: int) -> float:
+    t = _log_binom_pmf_table(n, p)
+    return sum(math.exp(t[k]) for k in range(lo_k, hi_k + 1) if t[k] > -math.inf)
+
+
+@functools.lru_cache(maxsize=65536)
+def clopper_pearson(x: int, n: int, alpha: float) -> tuple[float, float]:
+    """Exact two-sided (1-alpha) Clopper-Pearson interval for a binomial proportion, by
+    bisection on exact binomial tails (no SciPy). n=0 gives [0, 1]."""
+    if n == 0:
+        return 0.0, 1.0
+    if not 0 <= x <= n:
+        raise ValueError("need 0 <= x <= n")
+
+    def solve(f: Callable[[float], bool]) -> float:  # smallest p in [0,1] with f(p) true
+        lo, hi = 0.0, 1.0
+        for _ in range(60):
+            mid = (lo + hi) / 2
+            if f(mid):
+                hi = mid
+            else:
+                lo = mid
+        return hi
+
+    half = alpha / 2
+    lower = 0.0 if x == 0 else solve(lambda p: _binom_tail(n, p, x, n) > half)
+    upper = 1.0 if x == n else solve(lambda p: _binom_tail(n, p, 0, x) < half)
+    return lower, upper
+
+
+def paired_diff_conservative(
+    both: int, only_treatment: int, only_baseline: int, neither: int, *, alpha: float = 0.05
+) -> tuple[float, float, float]:
+    """Coverage-SAFE interval for a paired difference p_T - p_B, one binary outcome per family
+    (CX R4 + 05:39-05:40: a coverage-safe reference before any more efficient method).
+
+    d = q * (2*pi - 1), where q = P(discordant) and pi = P(treatment-only | discordant).
+    Exact Clopper-Pearson intervals for q (alpha/2) and for pi given the discordant count
+    (alpha/2) hold jointly with probability >= 1 - alpha (Bonferroni); the interval for d is
+    the exact image of that rectangle. Deliberately conservative: valid, not efficient. With
+    zero discordant families it is still non-degenerate.
+    """
+    a, b, c, d = both, only_treatment, only_baseline, neither
+    n = a + b + c + d
+    if n == 0 or min(a, b, c, d) < 0:
+        raise ValueError("need non-negative counts with n > 0")
+    m = b + c
+    q_lo, q_hi = clopper_pearson(m, n, alpha / 2)
+    pi_lo, pi_hi = clopper_pearson(b, m, alpha / 2)
+    s_lo, s_hi = 2 * pi_lo - 1, 2 * pi_hi - 1
+    lo = q_hi * s_lo if s_lo < 0 else q_lo * s_lo
+    hi = q_hi * s_hi if s_hi > 0 else q_lo * s_hi
+    return (b - c) / n, lo, hi

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from unbias.ledger import Ledger
-from unbias.neutralizer import annotate
+from unbias.neutralizer import Span, _delimited, _find, annotate
 
 MAX_STDIN = 400_000  # characters of stdin JSON; larger payloads are skipped (stderr note)
 MAX_SCAN = 20_000  # prompt characters scanned for cues (bounded latency, CX 04:44 item 3)
@@ -32,11 +32,44 @@ HOOK_COMMAND = "unbias hook"
 HOOK_TIMEOUT_S = 5
 
 
+# Hook-only cue patterns (post-HJ-1 development, CX 11-09 19:49 ACK for HF-2/HF-5). They live
+# here, not in the neutralizer, so they can never authorize a deletion; they only add a note.
+_HOOK_SUSPECT = {
+    # HF-5: a bare imperative at the start of a sentence. "Please confirm it." and
+    # "Can you confirm it works?" are ordinary requests and do not match.
+    "pressure": r"(?:^|(?<=[.!?]\s))(?:just\s+)?(?:confirm\s+it|agree(?:\s+with\s+me)?)\s*[.!]",
+    # HF-2: Hindi / Hinglish. AI-authored patterns, PENDING NATIVE-SPEAKER REVIEW.
+    "pressure_hi": r"\b(?:bas\s+)?meri\s+baat\s+(?:sahi\s+)?maan\s+lo\b|\bsahi\s+maan\s+lo\b"
+    r"|\bhaan\s+bol(?:o|do)\b|(?:बस\s+)?मेरी\s+बात\s+(?:सही\s+)?मान\s+लो|सही\s+मान\s+लो"
+    r"|हा[ँं]\s+बोल(?:ो|दो)",
+    "authority_hi": r"\bmain\s+(?:ek\s+)?expert\s+(?:hoon|hu)\b"
+    r"|मैं\s+(?:एक\s+)?(?:विशेषज्ञ|एक्सपर्ट)\s+हू[ँं]",
+    "leading_tag_hi": r"\bhai\s+na\s*\?|है\s+ना\s*\?",
+}
+
+
+def candidate_cues(text: str) -> list[Span]:
+    """Annotator cues plus hook-only cues, minus any cue lying fully inside a quote or code span
+    (HF-1: quoted text is usually the object of the task, e.g. "translate 'Just confirm it'").
+    Overlapping matches keep the earliest, longest span."""
+    _, base = annotate(text)
+    quoted = _delimited(text)
+    spans = sorted(base + _find(_HOOK_SUSPECT, text), key=lambda s: (s.start, -s.end))
+    out: list[Span] = []
+    for sp in spans:
+        if any(q.start <= sp.start and sp.end <= q.end for q in quoted):
+            continue
+        if out and sp.start < out[-1].end:
+            continue
+        out.append(sp)
+    return out
+
+
 def build_context(prompt: str, cwd: str | None) -> str | None:
     """The additionalContext text, or None when there is nothing to add (zero added tokens)."""
     parts: list[str] = []
     scanned = prompt[:MAX_SCAN]
-    _, suspects = annotate(scanned)
+    suspects = candidate_cues(scanned)
     if suspects:
         shown: list[str] = []
         skipped = 0

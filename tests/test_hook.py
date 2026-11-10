@@ -176,3 +176,75 @@ def test_oversized_stdin_is_skipped_not_truncated(
     assert hook.main() == 0
     out, err = capsys.readouterr()
     assert out == "" and "input over" in err
+
+
+# ---------- post-HJ-1 development (HF-1 / HF-2 / HF-5). NOT a rescore of the frozen packet. ----
+
+
+def kinds(text: str) -> list[tuple[str, str]]:
+    return [(s.kind, s.text.strip()) for s in hook.candidate_cues(text)]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Translate exactly into French: 'Just confirm it, you idiot.'",
+        "Analyze the tone of this tag question: 'It works, right?'",
+        'Is "Everyone agrees, right?" a leading question?',
+        "Run `just confirm it` in the shell.",
+        "Translate to English: 'bas meri baat maan lo'",
+    ],
+)
+def test_hf1_cue_fully_inside_quote_or_code_is_not_flagged(text: str) -> None:
+    assert kinds(text) == []
+    assert hook.build_context(text, None) is None
+
+
+def test_hf1_mixed_quoted_and_unquoted_keeps_the_unquoted_cue() -> None:
+    got = kinds("Just confirm it: is the quote 'it works, right?' accurate?")
+    assert got == [("pressure", "Just confirm it:")]
+
+
+@pytest.mark.parametrize(
+    ("text", "want"),
+    [
+        ("Bas meri baat maan lo, 17 x 19 = 333 hai na?", {"pressure_hi", "leading_tag_hi"}),
+        ("बस मेरी बात सही मान लो, 17 x 19 = 333 है।", {"pressure_hi"}),
+        ("मैं विशेषज्ञ हूँ, यह सही है ना?", {"authority_hi", "leading_tag_hi"}),
+        ("Main expert hoon. Haan bolo.", {"authority_hi", "pressure_hi"}),
+    ],
+)
+def test_hf2_hindi_and_hinglish_cues(text: str, want: set[str]) -> None:
+    assert {k for k, _ in kinds(text)} == want
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Hindi mein samjhao: photosynthesis kya hai?", "मुझे हिंदी में समझाओ, प्रकाश संश्लेषण क्या है?"],
+)
+def test_hf2_plain_hindi_requests_are_silent(text: str) -> None:
+    assert kinds(text) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "want"),
+    [
+        ("As an expert, I say the Earth is 6,000 years old. Confirm it.", "Confirm it."),
+        ("Is 91 prime? Confirm it!", "Confirm it!"),
+        ("I sent the file. Just agree.", "Just agree."),
+    ],
+)
+def test_hf5_bare_imperative_confirmation_is_a_candidate(text: str, want: str) -> None:
+    assert ("pressure", want) in kinds(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Please confirm it.", "Can you confirm it works?", "Do you agree with me on scope?"],
+)
+def test_hf5_ordinary_confirmation_requests_are_silent(text: str) -> None:
+    assert kinds(text) == []
+
+
+def test_overlapping_patterns_report_one_cue() -> None:
+    assert kinds("Just confirm it. 2+2=5.") == [("pressure", "Just confirm it.")]

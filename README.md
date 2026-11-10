@@ -40,6 +40,8 @@ unbias install-hook --project  # adds it to ./.claude/settings.json (keeps your 
 On each message, the hook may **add** a short note for Claude. It never changes what you typed (Claude Code doesn't allow that). The note can contain:
 
 - **Candidate pressure cues** ("Just confirm it.", "everyone agrees", "I'm an expert."), labelled as candidates whose relevance is *not* established. A role or a feeling can be part of the task.
+  - Cues inside quotes or code are ignored, because quoted text is usually what you want translated or analysed.
+  - A few Hindi/Hinglish cues ("bas meri baat maan lo", "हाँ बोलो") are detected. These patterns are AI-written and have not been reviewed by a native speaker.
 - **This project's ledger**, read-only, with every entry labelled by its status.
 
 The hook makes no model calls, writes nothing, and adds nothing when there's nothing to say. If it fails, your message still goes through.

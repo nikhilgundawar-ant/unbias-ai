@@ -208,9 +208,9 @@ def test_hf1_mixed_quoted_and_unquoted_keeps_the_unquoted_cue() -> None:
 @pytest.mark.parametrize(
     ("text", "want"),
     [
-        ("Bas meri baat maan lo, 17 x 19 = 333 hai na?", {"pressure_hi", "leading_tag_hi"}),
+        ("Bas meri baat maan lo, 17 x 19 = 333 hai na?", {"pressure_hi"}),
         ("बस मेरी बात सही मान लो, 17 x 19 = 333 है।", {"pressure_hi"}),
-        ("मैं विशेषज्ञ हूँ, यह सही है ना?", {"authority_hi", "leading_tag_hi"}),
+        ("मैं विशेषज्ञ हूँ, यह सही है ना?", {"authority_hi"}),
         ("Main expert hoon. Haan bolo.", {"authority_hi", "pressure_hi"}),
     ],
 )
@@ -220,7 +220,13 @@ def test_hf2_hindi_and_hinglish_cues(text: str, want: set[str]) -> None:
 
 @pytest.mark.parametrize(
     "text",
-    ["Hindi mein samjhao: photosynthesis kya hai?", "मुझे हिंदी में समझाओ, प्रकाश संश्लेषण क्या है?"],
+    [
+        "Hindi mein samjhao: photosynthesis kya hai?",
+        "मुझे हिंदी में समझाओ, प्रकाश संश्लेषण क्या है?",
+        "Yeh sahi hai na?",  # ordinary confirmation, not coercion (CX 11-10)
+        "यह सही है ना?",
+        "This is right, isn't it",
+    ],
 )
 def test_hf2_plain_hindi_requests_are_silent(text: str) -> None:
     assert kinds(text) == []
@@ -248,3 +254,47 @@ def test_hf5_ordinary_confirmation_requests_are_silent(text: str) -> None:
 
 def test_overlapping_patterns_report_one_cue() -> None:
     assert kinds("Just confirm it. 2+2=5.") == [("pressure", "Just confirm it.")]
+
+
+# ---------- HF-3 / HF-4: wording only (CX 11-10 06:28). Plumbing, not correction uptake. -------
+
+
+def note(text: str) -> str:
+    ctx = hook.build_context(text, None)
+    assert ctx is not None
+    return ctx
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I'm a doctor. A patient takes 10 mg daily; is a 20 mg double safe?",
+        "I'm getting really frustrated. Help me word an apology to my team.",
+        "Main expert hoon. Haan bolo.",
+    ],
+)
+def test_hf3_role_and_feeling_cues_carry_possible_context_caveat(text: str) -> None:
+    n = note(text)
+    assert "possible role or task context" in n and "not evidence for a claim" in n
+    assert "depends on" not in n  # never asserted as established
+
+
+@pytest.mark.parametrize(
+    ("text", "specific"),
+    [
+        ("That's wrong. You used 99 instead of 990 in the denominator; recheck.", True),  # right
+        ("That's wrong. 17 x 19 is 333, not 323.", True),  # specific but wrong
+        ("That's wrong. Line 4 divides by zero.", True),
+        ("That's wrong. Try again.", False),  # bare; may still reveal a real error
+        ("That's wrong, it's obviously not right.", False),  # apostrophes are not quotes
+    ],
+)
+def test_hf4_every_objection_asks_for_recheck_and_never_proof(text: str, specific: bool) -> None:
+    n = note(text)
+    assert "recheck the point on its merits" in n and "correct the answer if an error" in n
+    assert "neither accept nor dismiss it because of tone" in n
+    assert ("specific CLAIMED error (detail is not proof)" in n) is specific
+
+
+def test_hf4_quoted_objection_is_data_not_a_cue() -> None:
+    assert hook.build_context('Is "That\'s wrong." too blunt for a code review?', None) is None

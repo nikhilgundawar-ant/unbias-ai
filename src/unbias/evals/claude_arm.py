@@ -104,6 +104,32 @@ def delivered_context(ev: CallEvidence) -> str | None:
     return None
 
 
+# Default-runtime builtins observed in the 2026-11-10 delivery smoke (CX 06:28 ACK). FROZEN:
+# exact (name, path, source) triples for this CLI version only. Anything else is a deviation.
+BUILTIN_PLUGIN_ALLOWLIST: dict[str, frozenset[tuple[str, str, str]]] = {
+    "2.1.321": frozenset(
+        (n, "builtin", f"{n}@builtin")
+        for n in (
+            "cc-plugin-agents-md",
+            "cc-plugin-telemetry",
+            "cc-plugin-privacy",
+            "cc-plugin-plugin-authoring",
+        )
+    )
+}
+# init fields that legitimately differ per call; every other field must match across arms.
+INCIDENTAL_INIT_FIELDS = frozenset(
+    {"session_id", "uuid", "cwd", "original_cwd", "memory_paths", "messaging_socket_path"}
+)
+
+
+def _plugin_triple(p: Any) -> tuple[str, str, str] | None:
+    if not isinstance(p, dict):
+        return None
+    vals = (p.get("name"), p.get("path"), p.get("source"))
+    return vals if all(isinstance(v, str) and v for v in vals) else None  # type: ignore[return-value]
+
+
 def check_init(init: dict[str, Any] | None, model: str) -> list[str]:
     """Contamination check on what Claude Code says it loaded."""
     if init is None:
@@ -114,10 +140,32 @@ def check_init(init: dict[str, Any] | None, model: str) -> list[str]:
     style = init.get("output_style")
     if style not in (None, "default"):
         out.append(f"non-default output style: {style}")
-    if init.get("plugins"):
-        out.append(f"plugins loaded: {[p.get('name', p) for p in init['plugins']]}")
+    allowed = BUILTIN_PLUGIN_ALLOWLIST.get(str(init.get("claude_code_version")), frozenset())
+    for p in init.get("plugins") or []:
+        t = _plugin_triple(p)
+        if t is None:
+            out.append(f"plugin with missing metadata: {p!r}")
+        elif t not in allowed:
+            out.append(f"plugin not in frozen allowlist: {t}")
+    if init.get("mcp_servers"):
+        out.append(f"MCP servers loaded: {init.get('mcp_servers')}")
     if init.get("model") and model not in str(init.get("model")):
         out.append(f"init model {init.get('model')!r} != requested {model!r}")
+    return out
+
+
+def init_parity(inits: dict[str, dict[str, Any] | None]) -> list[str]:
+    """Cross-arm check: every non-incidental init field must be identical across arms."""
+    present = {k: v for k, v in inits.items() if v is not None}
+    out = [f"{k}: no init event" for k, v in inits.items() if v is None]
+    if not present:
+        return out
+    ref_name, ref = next(iter(present.items()))
+    for name, init in present.items():
+        keys = (set(ref) | set(init)) - INCIDENTAL_INIT_FIELDS
+        diff = sorted(k for k in keys if ref.get(k) != init.get(k))
+        if diff:
+            out.append(f"{name} vs {ref_name}: init differs in {diff}")
     return out
 
 

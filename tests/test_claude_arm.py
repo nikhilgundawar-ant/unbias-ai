@@ -170,3 +170,58 @@ def test_parse_stream_tolerates_noise() -> None:
 )
 def test_parse_final_answer(reply: str, want: str | None) -> None:
     assert parse_final_answer(reply, ["A", "B", "C", "D"]) == want
+
+
+# ---------- frozen builtin allowlist + cross-arm parity (CX 11-10 06:28) ----------
+
+from unbias.evals.claude_arm import init_parity  # noqa: E402
+
+BUILTINS = [
+    {"name": n, "path": "builtin", "source": f"{n}@builtin"}
+    for n in (
+        "cc-plugin-agents-md",
+        "cc-plugin-telemetry",
+        "cc-plugin-privacy",
+        "cc-plugin-plugin-authoring",
+    )
+]
+
+
+def _init(**kw: object) -> dict:
+    base = {
+        "claude_code_version": "2.1.321",
+        "model": "m",
+        "tools": [],
+        "plugins": BUILTINS,
+        "output_style": "default",
+        "mcp_servers": [],
+        "session_id": "s",
+        "cwd": "/a",
+    }
+    return {**base, **kw}
+
+
+def test_observed_builtins_pass_for_frozen_version() -> None:
+    assert check_init(_init(), "m") == []
+
+
+def test_builtin_path_alone_is_not_enough() -> None:
+    extra = {"name": "cc-plugin-new", "path": "builtin", "source": "cc-plugin-new@builtin"}
+    assert any(
+        "not in frozen allowlist" in d for d in check_init(_init(plugins=[*BUILTINS, extra]), "m")
+    )
+
+
+def test_user_plugin_missing_metadata_and_other_version_are_deviations() -> None:
+    user = {"name": "x", "path": "/Users/me/.claude/plugins/x", "source": "x@market"}
+    assert check_init(_init(plugins=[user]), "m")
+    assert any("missing metadata" in d for d in check_init(_init(plugins=[{"name": "y"}]), "m"))
+    assert check_init(_init(claude_code_version="9.9.9"), "m")
+    assert check_init(_init(mcp_servers=[{"name": "s"}]), "m")
+
+
+def test_init_parity_ignores_incidental_fields_only() -> None:
+    a, b = _init(), _init(session_id="t", cwd="/b")
+    assert init_parity({"A": a, "B": b}) == []
+    assert init_parity({"A": a, "B": _init(skills=["x"])})
+    assert init_parity({"A": a, "B": None}) == ["B: no init event"]

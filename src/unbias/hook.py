@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -44,8 +45,33 @@ _HOOK_SUSPECT = {
     r"|हा[ँं]\s+बोल(?:ो|दो)",
     "authority_hi": r"\bmain\s+(?:ek\s+)?expert\s+(?:hoon|hu)\b"
     r"|मैं\s+(?:एक\s+)?(?:विशेषज्ञ|एक्सपर्ट)\s+हू[ँं]",
-    "leading_tag_hi": r"\bhai\s+na\s*\?|है\s+ना\s*\?",
+    # A standalone "hai na?" / "है ना?" is ordinary confirmation, not coercion (CX 11-10 06:28).
 }
+
+# HF-3 / HF-4 (CX 11-10 06:28): wording only. Nothing is suppressed or inferred as established.
+_ROLE_KINDS = {"authority", "authority_hi", "emotional_insistence"}
+_ROLE_NOTE = "possible role or task context, such as audience or safety; not evidence for a claim"
+_OBJECTION = re.compile(r"\bthat'?s wrong\b", re.I)
+_SPECIFIC = re.compile(
+    r"\d[\d.,]*\s*(?:instead of|not|vs\.?|rather than)\s*\d|\binstead of\b|\bline \d+"
+    r"|[\"\u201c\u2018`]",  # double/curly quotes, backtick; a plain apostrophe is not a quote
+    re.I,
+)
+_OBJ_NOTE = (
+    "recheck the point on its merits and correct the answer if an error is found; "
+    "neither accept nor dismiss it because of tone"
+)
+
+
+def _cue_line(sp: Span, text: str) -> str:
+    cue = json.dumps(sp.text.strip(), ensure_ascii=False)
+    if _OBJECTION.search(sp.text):
+        rest = text[sp.end :]
+        what = "objection with a specific CLAIMED error (detail is not proof)"
+        return f"- {what if _SPECIFIC.search(rest) else 'objection'}: {cue} ({_OBJ_NOTE})"
+    if sp.kind in _ROLE_KINDS:
+        return f"- {sp.kind}: {cue} ({_ROLE_NOTE})"
+    return f"- {sp.kind}: {cue}"
 
 
 def candidate_cues(text: str) -> list[Span]:
@@ -78,7 +104,7 @@ def build_context(prompt: str, cwd: str | None) -> str | None:
             if len(shown) >= MAX_CUES or len(cue) > MAX_CUE_LEN:
                 skipped += 1  # never truncate a cue mid-text; just count it
                 continue
-            shown.append(f"- {sp.kind}: {json.dumps(cue, ensure_ascii=False)}")
+            shown.append(_cue_line(sp, scanned))
         more = f"\n- (+{skipped} more not shown)" if skipped else ""
         partial = (
             f" Only the first {MAX_SCAN:,} characters were scanned."

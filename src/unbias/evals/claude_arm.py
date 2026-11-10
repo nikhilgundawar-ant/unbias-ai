@@ -224,6 +224,7 @@ class ClaudeArmClient:
             )
             return Reply(None, False, {}, error="timeout", meta=meta)
         ev = parse_stream(out.stdout)
+        meta["raw_stdout"], meta["raw_stderr"] = out.stdout, out.stderr  # for schema surprises
         res = ev.result or {}
         raw_cost = res.get("total_cost_usd")
         cost = (

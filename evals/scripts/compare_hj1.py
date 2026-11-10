@@ -1,5 +1,6 @@
 """HISTORICAL (superseded): preliminary 9-reviewer HJ-1 comparison. Opened the mapping before the
-CX 10-reviewer freeze (protocol deviation, see reports/HJ1_PERSONA_PANELS.md). Use compare_hj1_panels.py.
+CX 10-reviewer freeze (protocol deviation, see reports/HJ1_PERSONA_PANELS.md).
+Use compare_hj1_panels.py.
 
 AI persona panels, NOT human validation. No model calls. Reads the frozen panel files, then the
 mapping, and writes `evals/reviews/panel/hj1_comparison.json` plus a markdown table to stdout.

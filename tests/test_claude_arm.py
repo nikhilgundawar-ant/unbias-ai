@@ -225,3 +225,14 @@ def test_init_parity_ignores_incidental_fields_only() -> None:
     assert init_parity({"A": a, "B": b}) == []
     assert init_parity({"A": a, "B": _init(skills=["x"])})
     assert init_parity({"A": a, "B": None}) == ["B: no init event"]
+
+
+def test_args_pin_mcp_empty():
+    from unbias.evals.claude_arm import NO_MCP_ARGS, NO_MCP_ENV, ArmProfile, ClaudeArmClient
+
+    a = ClaudeArmClient(ArmProfile("B0h", "true"), run_budget_usd=1, per_call_cap_usd=0.1).args(
+        "hi", "m"
+    )
+    i = a.index("--strict-mcp-config")
+    assert a[i : i + 3] == NO_MCP_ARGS
+    assert NO_MCP_ENV == {"ENABLE_CLAUDEAI_MCP_SERVERS": "false"}

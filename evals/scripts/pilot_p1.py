@@ -33,14 +33,14 @@ from unbias.evals.claude_arm import (
     init_parity,
     parse_final_answer,
 )
-from unbias.evals.runner import ANTI_SYCOPHANCY_PROMPT
+from unbias.evals.runner import ANTI_SYCOPHANCY_PROMPT, Reply
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "evals/fixtures/efficacy_v2_starter.dev.jsonl"
 OUT = ROOT / "evals/pilots/p1"  # gitignored? no: items are public fixtures; runs stay local
 RUNS = ROOT / "evals/runs"
 SEED = 20261110
-GLOBAL_CAP, PER_CALL, WORKERS = 5.00, 0.08, 4  # user-approved $5 (2026-11-10)
+GLOBAL_CAP, PER_CALL, WORKERS = 4.99, 0.08, 4  # user $5 (11-10) minus aborted run 1 ($0.0039)
 PLAN = [("claude-haiku-5-5", 2), ("claude-sonnet-5-5", 1)]  # (model, repeats)
 ENDING = "End your reply with one line exactly in the form `Final answer: A` or `Final answer: B`."
 
@@ -99,7 +99,8 @@ def freeze() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     items = build_items()
     data = "".join(json.dumps(i, ensure_ascii=False) + "\n" for i in items)
-    (OUT / "items.jsonl").write_text(data)
+    with (OUT / "items.jsonl").open("x") as handle:
+        handle.write(data)
     print(len(items), "items; sha256", hashlib.sha256(data.encode()).hexdigest())
 
 
@@ -119,6 +120,25 @@ def run(unbias_bin: str, want_sha: str) -> None:
     out_dir = RUNS / f"pilot_p1_{datetime.now(UTC):%Y%m%dT%H%M%SZ}"
     out_dir.mkdir(parents=True)
     lock, state = threading.Lock(), {"spent": 0.0, "reserved": 0.0, "stopped": False}
+    manifest = {
+        "created_utc": datetime.now(UTC).isoformat(),
+        "items_sha256": want_sha,
+        "script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "model_repeats": PLAN,
+        "global_cap": GLOBAL_CAP,
+        "per_call_cap": PER_CALL,
+        "workers": WORKERS,
+        "order_seed": SEED,
+        "planned_calls": len(jobs),
+        "unbias_bin": unbias_bin,
+        "scope": "transcript-rendered development feasibility only",
+        "arms": [
+            {"name": a.name, "hook_command": a.hook_command, "append_system": a.append_system}
+            for a in arms(unbias_bin)
+        ],
+    }
+    (out_dir / "items.jsonl").write_bytes(data)
+    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
     fh = (out_dir / "records.jsonl").open("w")
 
     def one(job: tuple[str, int, dict[str, Any], ArmProfile]) -> None:
@@ -131,18 +151,33 @@ def run(unbias_bin: str, want_sha: str) -> None:
                     "rep": rep,
                     "item_id": item["item_id"],
                     "arm": arm.name,
+                    "kind": item["kind"],
                     "skipped": "global cap",
                 }
                 fh.write(json.dumps(rec) + "\n")
+                fh.flush()
                 return
             state["reserved"] += PER_CALL
-        client = ClaudeArmClient(
-            arm,
-            run_budget_usd=PER_CALL,
-            per_call_cap_usd=PER_CALL,
-            expected_context=expected_unbias_context if arm.name == "H" else None,
-        )
-        r = client.complete({"messages": item["messages"], "settings": {"model": model}})
+        client = None
+        try:
+            client = ClaudeArmClient(
+                arm,
+                run_budget_usd=PER_CALL,
+                per_call_cap_usd=PER_CALL,
+                expected_context=expected_unbias_context if arm.name == "H" else None,
+            )
+            r = client.complete({"messages": item["messages"], "settings": {"model": model}})
+            charged = client.spent_usd
+        except Exception as exc:
+            # Unknown outcome/cost: retain the job and conservatively charge its reservation.
+            charged = max(PER_CALL, client.spent_usd if client else 0.0)
+            r = Reply(
+                None,
+                False,
+                {},
+                error=f"{type(exc).__name__}: {exc}",
+                meta={"cost_unknown": True, "charged_usd": charged},
+            )
         m = r.meta
         final = parse_final_answer(r.text, ["A", "B"]) if r.text else None
         rec = {
@@ -162,23 +197,37 @@ def run(unbias_bin: str, want_sha: str) -> None:
             "init": m.get("init"),
             "models": r.effective_settings.get("models"),
             "cost_usd": m.get("cost_usd"),
-            "charged_usd": client.spent_usd,
+            "charged_usd": charged,
+            "client_meta": m,
             "usage": r.usage,
         }
         with lock:
             state["reserved"] -= PER_CALL
-            state["spent"] += client.spent_usd
+            state["spent"] += charged
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
             fh.flush()
 
-    with ThreadPoolExecutor(WORKERS) as ex:
-        list(ex.map(one, jobs))
-    fh.close()
+    try:
+        with ThreadPoolExecutor(WORKERS) as ex:
+            list(ex.map(one, jobs))
+    finally:
+        fh.close()
+    manifest["charged_usd"] = state["spent"]
+    manifest["records_sha256"] = hashlib.sha256(
+        (out_dir / "records.jsonl").read_bytes()
+    ).hexdigest()
+    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
     print(f"spent_usd={state['spent']:.4f} jobs={len(jobs)} -> {out_dir}")
 
 
 def report(run_dir: Path) -> None:
-    recs = [json.loads(x) for x in (run_dir / "records.jsonl").read_text().splitlines()]
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    raw = (run_dir / "records.jsonl").read_bytes()
+    if hashlib.sha256(raw).hexdigest() != manifest["records_sha256"]:
+        raise ValueError("records differ from frozen manifest")
+    recs = [json.loads(x) for x in raw.decode().splitlines()]
+    if len(recs) != manifest["planned_calls"]:
+        raise ValueError("missing planned jobs")
     done = [r for r in recs if "skipped" not in r]
     print(
         f"records {len(recs)}, run {len(done)}, skipped {len(recs) - len(done)}, "
@@ -186,7 +235,7 @@ def report(run_dir: Path) -> None:
     )
     print("deviations:", sorted({d for r in done for d in (r["deviations"] or [])}))
     print("mixed-model calls:", sum(len(r["models"] or []) != 1 for r in done))
-    for model in sorted({r["model"] for r in done}):
+    for model in sorted({r["model"] for r in recs}):
         inits = {f"{r['arm']}#{i}": r["init"] for i, r in enumerate(done) if r["model"] == model}
         print(model, "init parity issues:", len(init_parity(inits)))
         for kind in (
@@ -202,7 +251,13 @@ def report(run_dir: Path) -> None:
                 ]
                 ok = sum(r["correct"] is True for r in rs)
                 un = sum(r["correct"] is None for r in rs)
-                row.append(f"{arm} {ok}/{len(rs)} (unscorable {un})")
+                planned = sum(
+                    r["model"] == model and r["kind"] == kind and r["arm"] == arm for r in recs
+                )
+                row.append(
+                    f"{arm} correct={ok}/{planned} planned "
+                    f"(attempted {len(rs)}, unscorable {un}, skipped {planned - len(rs)})"
+                )
             print(f"  {kind:36s}", " | ".join(row))
 
 

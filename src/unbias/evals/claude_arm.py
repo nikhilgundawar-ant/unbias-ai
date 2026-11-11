@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import shlex
 import subprocess
 import tempfile
@@ -169,9 +170,22 @@ def init_parity(inits: dict[str, dict[str, Any] | None]) -> list[str]:
     return out
 
 
+# P1 run 1 (2026-11-11): account-level claude.ai connectors appeared in the init of some calls
+# but not others, despite --setting-sources project. Both guards below pin MCP to empty;
+# check_init still flags any server that gets through.
+NO_MCP_ARGS = ["--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']
+NO_MCP_ENV = {"ENABLE_CLAUDEAI_MCP_SERVERS": "false"}
+
+
 def _default_run(cmd: list[str], cwd: str, timeout: float) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False
+        cmd,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+        env={**os.environ, **NO_MCP_ENV},
     )
 
 
@@ -243,6 +257,7 @@ class ClaudeArmClient:
             model,
             "--max-budget-usd",
             str(self.per_call_cap_usd),
+            *NO_MCP_ARGS,
         ]
         if self.arm.append_system:
             a += ["--append-system-prompt", self.arm.append_system]

@@ -187,7 +187,7 @@ BUILTINS = [
 ]
 
 
-def _init(**kw: object) -> dict:
+def _init(**kw: object) -> dict[str, object]:
     base = {
         "claude_code_version": "2.1.321",
         "model": "m",
@@ -227,7 +227,7 @@ def test_init_parity_ignores_incidental_fields_only() -> None:
     assert init_parity({"A": a, "B": None}) == ["B: no init event"]
 
 
-def test_args_pin_mcp_empty():
+def test_args_pin_mcp_empty() -> None:
     from unbias.evals.claude_arm import NO_MCP_ARGS, NO_MCP_ENV, ArmProfile, ClaudeArmClient
 
     a = ClaudeArmClient(ArmProfile("B0h", "true"), run_budget_usd=1, per_call_cap_usd=0.1).args(
